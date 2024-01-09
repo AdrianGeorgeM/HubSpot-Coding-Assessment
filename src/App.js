@@ -1,134 +1,123 @@
-import { useEffect, useState } from "react";
+import React, { useState, useEffect } from 'react';
 
-const countriesNames = [];
+// API endpoints
+const API_GET_URL =
+	'https://candidate.hubteam.com/candidateTest/v3/problem/dataset?userKey=28097c5a0ffcbfd79be06446f989';
+const API_POST_URL =
+	'https://candidate.hubteam.com/candidateTest/v3/problem/result?userKey=28097c5a0ffcbfd79be06446f989';
 
-function App() {
-  const [partners, setPartners] = useState([]);
+function HubSpotEventPlanner() {
+	const [result, setResult] = useState(null);
 
-  useEffect(() => {
-    fetch(
-      "https://candidate.hubteam.com/candidateTest/v3/problem/dataset?userKey=7814f7b415916e4f550a09a4c9bc"
-    )
-      .then((response) => {
-        if (response.ok) {
-          return response.json();
-        } else {
-          console.log(response);
-        }
-      })
-      .then((data) => {
-        setPartners(data.partners);
-        getCountries();
-      });
-  }, []);
+	// Effect to initiate data processing on component mount
+	useEffect(() => {
+		fetchDataAndProcess();
+	}, []);
 
-  const getCountries = () => {
-    partners.forEach((partner) => {
-      if (!countriesNames.includes(partner.country)) {
-        countriesNames.push(partner.country);
-      }
-    });
+	// Fetches data from the API, processes it, and submits the result
+	const fetchDataAndProcess = async () => {
+		try {
+			const response = await fetch(API_GET_URL);
+			const data = await response.json();
 
-    getDates();
-  };
+			const bestDates = processPartnerData(data);
+			const submissionResponse = await submitData(bestDates);
 
-  const getDates = () => {
-    const partnersInCountry = countriesNames.map((country) => {
-      return partners.filter((partner) => partner.country === country);
-    });
+			setResult(submissionResponse);
+		} catch (error) {
+			console.error('Error:', error);
+		}
+	};
 
-    const countryDates = partnersInCountry.map((partnerInCountry) => {
-      const partnerDates = partnerInCountry.map(
-        (partner) => partner.availableDates
-      );
+	// Processes partner data to find the best event start dates for each country
+	function processPartnerData(data) {
+		const availability = {};
 
-      const consecutiveDays = partnerDates.map((date) => {
-        return date.map((day) => {
-          return date.map((testDate) => {
-            if (
-              new Date(testDate).getTime() - 86400000 ===
-              new Date(day).getTime()
-              ) {
-              return day;
-            } else if (
-              new Date(testDate).getTime() + 86400000 ===
-              new Date(day).getTime()
-            ) {
-              return testDate;
-            } else {
-              return null;
-            }
-          });
-        });
-      });
+		// Organizing partner availability by country and date
+		data.partners.forEach((partner) => {
+			if (!availability[partner.country]) {
+				availability[partner.country] = {};
+			}
 
-      return consecutiveDays;
-    });
+			partner.availableDates.forEach((date) => {
+				if (!availability[partner.country][date]) {
+					availability[partner.country][date] = [];
+				}
+				availability[partner.country][date].push(partner.email);
+			});
+		});
 
-    const cleanedDates = countryDates.map((dates) => {
-      return dates.map((dateArr) => {
-        return dateArr.filter((dateArr2) => {
-          if (dateArr2.length) {
-            return dateArr2[0];
-          }
-        });
-      });
-    });
+		// Determining the best start dates
+		const bestDates = { countries: [] };
+		for (const country in availability) {
+			let maxCount = 0;
+			let bestStartDate = null;
+			const dates = Object.keys(availability[country]);
 
-    const countryMeetingDates = cleanedDates.map((peopleDates) => {
-      const simpleDates = peopleDates.map((arr) => arr.map((arr2) => arr2[0]));
-      const dateArray = [];
-      simpleDates.forEach((dateArr) => {
-        dateArr.forEach((date) => dateArray.push(date));
-      });
+			dates.forEach((date, index) => {
+				const nextDate = new Date(date);
+				nextDate.setDate(nextDate.getDate() + 1);
+				const nextDateString = nextDate.toISOString().split('T')[0];
 
-      function getDates(arr) {
-        return arr
-          .sort(
-            (a, b) =>
-              arr.filter((v) => v === a).length -
-              arr.filter((v) => v === b).length
-          )
-          .pop();
-      }
+				// Checking for consecutive dates with the most attendees
+				if (dates.includes(nextDateString)) {
+					const attendees = availability[country][date].filter((email) =>
+						availability[country][nextDateString].includes(email)
+					);
 
-      return getDates(dateArray);
-    });
+					if (attendees.length > maxCount) {
+						maxCount = attendees.length;
+						bestStartDate = date;
+					}
+				}
+			});
 
-    const countries = countryMeetingDates.reduce((acc, countryDate, index) => {
-      const attendees = partners.filter((partner) => {
-        if (partner.availableDates.includes(countryDate)) {
-          return partner.email;
-        }
-      });
+			bestDates.countries.push({
+				name: country,
+				startDate: bestStartDate,
+				attendeeCount: maxCount,
+				attendees: bestStartDate
+					? availability[country][bestStartDate].filter((email) =>
+							availability[country][
+								new Date(bestStartDate).toISOString().split('T')[0]
+							].includes(email)
+					  )
+					: [],
+			});
+		}
 
-      acc.push({
-        attendeeCount: attendees.length,
-        attendees: attendees.map((attendee) => attendee.email),
-        name: countriesNames[index],
-        startDate: countryDate ? countryDate : null,
-      });
-      return acc;
-    }, []);
+		return bestDates;
+	}
 
-    sendInvites(countries);
-  };
+	// Submits the processed data to the API
+	async function submitData(bestDates) {
+		try {
+			const response = await fetch(API_POST_URL, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+				},
+				body: JSON.stringify(bestDates),
+			});
+			return await response.json();
+		} catch (error) {
+			console.error('Error submitting data:', error);
+			return null;
+		}
+	}
 
-  const sendInvites = (data) => {
-    console.log(data)
-    fetch(
-      "https://candidate.hubteam.com/candidateTest/v3/problem/result?userKey=7814f7b415916e4f550a09a4c9bc",
-      {
-        method: "POST",
-        body: JSON.stringify({ "countries": data }),
-        headers: {
-          "Content-type": "application/json",
-        },
-      }
-    ).then((response) => console.log(response))
-  };
-
-  return <div className="App"></div>;
+	// Rendering the component with the submission result
+	return (
+		<div>
+			<h1>HubSpot Event Planner</h1>
+			{result && (
+				<div>
+					<h2>Submission Result</h2>
+					<pre>{JSON.stringify(result, null, 2)}</pre>
+				</div>
+			)}
+		</div>
+	);
 }
 
-export default App;
+export default HubSpotEventPlanner;
